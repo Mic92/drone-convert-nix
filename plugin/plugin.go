@@ -74,47 +74,41 @@ func isPipeline(r resource) bool {
 	return ok && k == "pipeline"
 }
 
-func isJobset(r resource) bool {
-	maybeJobset, ok := r["nix-jobset"]
-	if !ok {
-		return false
-	}
+func isBuildType(r resource, what string) bool {          
+    maybeJobset, ok := r[what]    
+    if !ok {                              
+        return false                      
+    }                                     
+                                          
+    jobset, ok := maybeJobset.(bool)      
+    return ok && jobset                   
+}                                         
 
-	jobset, ok := maybeJobset.(bool)
-	return ok && jobset
-}
-
-func isNixBuild(r resource) bool {
-	maybeBuild, ok := r["nix-build"]
-	if !ok {
-		return false
-	}
-
-	build, ok := maybeBuild.(bool)
-	return ok && build
-}
-
-func getNixStages(resources []resource) ([]resource, []resource, []resource) {
+func getNixStages(resources []resource) ([]resource, []resource, []resource, []resource) {
 	var (
 		jobsets []resource
 		builds  []resource
+		postBuilds []resource
 		others  []resource
 	)
 
 	for _, resource := range resources {
 		if isPipeline(resource) {
-			if isJobset(resource) {
+			if isBuildType(resource, "nix-jobset") {
 				delete(resource, "nix-jobset")
 				jobsets = append(jobsets, resource)
-			} else if isNixBuild(resource) {
+			} else if isBuildType(resource, "nix-build") {
 				delete(resource, "nix-build")
 				builds = append(builds, resource)
+			} else if isBuildType(resource, "nix-post-build") {
+				delete(resource, "nix-post-build")
+				postBuilds = append(postBuilds, resource)
 			}
 		} else {
 			others = append(others, resource)
 		}
 	}
-	return jobsets, builds, others
+	return jobsets, builds, postBuilds, others
 }
 
 func (p *plugin) createEvalBuild(req *converter.Request, jobsetStages []resource) (*drone.Build, error) {
@@ -211,38 +205,44 @@ func (p *plugin) evalJobsets(req *converter.Request, jobsetStages []resource) (m
 	return allJobs, nil
 }
 
-func populateNixStage(stage resource, jobName string, job *Job) {
-	nameField, ok := stage["Name"]
+func populateBuildStage(stage resource, jobName string, job *Job) {
+	nameField, ok := stage["name"]
 	if ok {
-		name, ok := nameField.(*string)
+		name, ok := nameField.(string)
 		if ok {
-			stage["Name"] = fmt.Sprintf("%s (%s)", *name, jobName)
-		} else {
-			stage["Name"] = jobName
+			jobName = fmt.Sprintf("%s (%s)", name, jobName)
 		}
+		stage["name"] = jobName
 	} else {
-		stage["Name"] = jobName
+		stage["name"] = jobName
 	}
 
-	envField, ok := stage["Environment"]
+	envField, ok := stage["environment"]
 	if ok {
-		env, ok := envField.(*map[string]string)
+		env, ok := envField.(map[string]interface{})
 		if ok {
-			(*env)["drvPath"] = job.DrvPath
-		} else {
-			stage["Environment"] = map[string]string{
-				"drvPath": job.DrvPath,
-			}
+			env["drvPath"] = job.DrvPath
+			return
 		}
+	}
 
-	} else {
-		stage["Environment"] = map[string]string{
-			"drvPath": job.DrvPath,
-		}
+	stage["environment"] = map[string]string{
+		"drvPath": job.DrvPath,
 	}
 }
 
-func renderConfig(nixStages []resource, others []resource, jobs map[string]Job) (string, error) {
+func populatePostBuildStage(stage resource, buildStages []string) {
+	dependsOn, ok := stage["depends_on"]
+	if ok {
+		old, ok := dependsOn.([]string)
+		if ok {
+			buildStages = append(buildStages, old...)
+		}
+	}
+	stage["depends_on"] = buildStages
+}
+
+func renderConfig(buildStages []resource, postBuildStages []resource, others []resource, jobs map[string]Job) (string, error) {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	for other := range others {
@@ -255,12 +255,24 @@ func renderConfig(nixStages []resource, others []resource, jobs map[string]Job) 
 		if len(job.Builds) == 0 {
 			continue
 		}
-		for _, n := range nixStages {
-			populateNixStage(n, jobName, &job)
-			err := enc.Encode(n)
+		for _, s := range buildStages {
+			populateBuildStage(s, jobName, &job)
+			err := enc.Encode(s)
 			if err != nil {
-				return "", fmt.Errorf("cannot convert jobset `%s` to yaml: %v", jobName, err)
+				return "", fmt.Errorf("cannot convert pipeline step `%s` to yaml: %v", s["name"], err)
 			}
+		}
+	}
+	buildStageNames := make([]string, 0, len(buildStages))
+	for _, s := range buildStages {
+		buildStageNames = append(buildStageNames, s["name"].(string))
+	}
+	
+	for _, s := range postBuildStages {
+		populatePostBuildStage(s, buildStageNames)
+		err := enc.Encode(s)
+		if err != nil {
+			return "", fmt.Errorf("cannot convert pipeline step `%s` to yaml: %v", s["name"], err)
 		}
 	}
 	err := enc.Close()
@@ -311,7 +323,7 @@ func (p *plugin) Convert(ctx context.Context, req *converter.Request) (*drone.Co
 		return nil, fmt.Errorf("cannot decode config: %v", err)
 	}
 
-	jobsetStages, buildStages, others := getNixStages(resources)
+	jobsetStages, buildStages, postBuildStages, others := getNixStages(resources)
 
 	if len(jobsetStages) == 0 {
 		requestLogger.Infoln("no pipeline found with nix-jobset flag set, skip evaluation...")
@@ -332,7 +344,7 @@ func (p *plugin) Convert(ctx context.Context, req *converter.Request) (*drone.Co
 		return nil, fmt.Errorf("cannot evaluate jobsets: %v", err)
 	}
 
-	config, err = renderConfig(buildStages, others, jobs)
+	config, err = renderConfig(buildStages, postBuildStages, others, jobs)
 
 	if err != nil {
 		return nil, fmt.Errorf("cannot generate pipeline configuration: %v", err)

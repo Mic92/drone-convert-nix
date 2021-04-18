@@ -79,17 +79,43 @@ environment:
 ---
 kind: pipeline
 type: exec
-name: Build job
+name: Build job without env
 nix-build: true
-
-platform:
-  os: linux
-  arch: amd64
-
 steps:
 - name: build
   commands:
   - nix build -L $derivation
+---
+kind: pipeline
+type: exec
+name: Build job with env
+nix-build: true
+environment:
+  foo: 1
+steps:
+- name: build
+  commands:
+  - nix build -L $derivation
+---
+kind: pipeline
+type: exec
+name: Post build with depends_on
+nix-post-build: true
+depends_on:
+  - "Eval jobset"
+steps:
+- name: after build
+  commands:
+  - echo do something...
+---
+kind: pipeline
+type: exec
+name: Post build without depends_on
+nix-post-build: true
+steps:
+- name: after build
+  commands:
+  - echo do something...
 `
 	build := drone.Build {
    	Number: 42,
@@ -133,6 +159,7 @@ steps:
 		drone.Line{ Number: 2, Message: "</hydra-eval-jobs>", },
 	}
 	buildLogs, err := json.Marshal(logs)
+	ok(t, err)
 	gock.New("http://drone-server").
 		Get("/api/repos/Mic92/drone-convert-nix/builds/42/logs/43/44").
 		Reply(200).
@@ -159,4 +186,5 @@ steps:
 	if !strings.Contains(config.Data, eval["job"].DrvPath) {
 		t.Fatalf("returned yaml template does not contain: %s: %s", eval["job"].DrvPath, config.Data)
 	}
+	fmt.Println(config.Data)
 }
