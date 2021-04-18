@@ -26,6 +26,37 @@ func ok(tb testing.TB, err error) {
 	}
 }
 
+func TestNonNixPipeline(t *testing.T) {
+	pipeline := `---
+kind: pipeline
+type: exec
+name: some command
+commands:
+  - echo hello world
+---`
+	req := &converter.Request{
+		Build: drone.Build{
+			Before: "",
+			After:  "6ee3cf41d995a79857e0db41c47bf619e6546571",
+		},
+		Config: drone.Config{
+			Data: pipeline,
+		},
+		Repo: drone.Repo{
+			Namespace: "Mic92",
+			Name:      "drone-convert-nix",
+			Slug:      "mic92/drone-convert-nix",
+			Config:    ".drone.yml",
+		},
+	}
+	plugin := New("http://drone-server", "api-token")
+	config, err := plugin.Convert(context.Background(), req)
+	ok(t, err)
+	if config.Data != pipeline {
+		t.Fatalf("returned yaml does not match with expected: %s != %s", config.Data, pipeline)
+	}
+}
+
 
 func TestPlugin(t *testing.T) {
 	defer gock.Off() // Flush pending mocks after test execution

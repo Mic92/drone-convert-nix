@@ -314,11 +314,17 @@ func (p *plugin) Convert(ctx context.Context, req *converter.Request) (*drone.Co
 	jobsetStages, buildStages, others := getNixStages(resources)
 
 	if len(jobsetStages) == 0 {
-		return nil, fmt.Errorf("no pipeline found with nix-jobset flag set")
+		requestLogger.Infoln("no pipeline found with nix-jobset flag set, skip evaluation...")
+		return &drone.Config{
+			Data: config,
+		}, nil
 	}
 
 	if len(buildStages) == 0 {
-		return nil, fmt.Errorf("no pipeline found with nix-build flag set")
+		requestLogger.Infoln("no pipeline found with nix-build flag set, skip evaluation...")
+		return &drone.Config{
+			Data: config,
+		}, nil
 	}
 
 	jobs, err := p.evalJobsets(req, jobsetStages)
