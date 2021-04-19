@@ -1,4 +1,6 @@
-A conversion extension to Nix evaluator for drone. _Please note this project requires Drone server version 1.4 or higher._
+A conversion extension to run hydra jobsets in drone in dedicated pipeline stages. _Please note this project requires Drone server version 1.4 or higher._
+
+Current status: WIP
 
 ## Installation
 
